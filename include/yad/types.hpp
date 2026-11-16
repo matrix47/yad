@@ -175,6 +175,18 @@ struct SnapshotValue {
         }
         return {};
     }
+
+    bool operator==(const SnapshotValue &o) const {
+        if (type != o.type) return false;
+        switch (type) {
+            case Type::None: return true;
+            case Type::Double: return dVal == o.dVal;
+            case Type::Bool: return bVal == o.bVal;
+            case Type::String: return sVal == o.sVal;
+        }
+        return false;
+    }
+    bool operator!=(const SnapshotValue &o) const { return !(*this == o); }
 };
 
 class Snapshot {
@@ -183,6 +195,13 @@ public:
     void set(const std::string &key, bool v) { map_[key] = SnapshotValue::fromBool(v); }
     void set(const std::string &key, const std::string &v) { map_[key] = SnapshotValue::fromString(v); }
     void set(const std::string &key, const char *v) { map_[key] = SnapshotValue::fromString(v ? v : ""); }
+
+    bool setIfChanged(const std::string &key, const SnapshotValue &val) {
+        auto it = map_.find(key);
+        if (it != map_.end() && it->second == val) return false;
+        map_[key] = val;
+        return true;
+    }
 
     bool contains(const std::string &key) const { return map_.find(key) != map_.end(); }
 

@@ -38,6 +38,13 @@ private:
 
     double cpuTempC_ = -1.0;
     int cpuTempPriority_ = 99;
+    std::unordered_map<std::string, std::string> hwmonChipNames_;
+    struct HwmonTempSample {
+        std::string chip;
+        std::string sensor;
+        double val = 0.0;
+    };
+    std::vector<HwmonTempSample> hwmonTemps_;
 
     struct NetSample {
         double rxBytes = 0.0;

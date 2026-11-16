@@ -32,9 +32,13 @@ public:
     int pageCount() const { return view_.pageCount(); }
     int currentPage() const { return view_.currentPage(); }
 
-    // Non-blocking step: advances HTTP node_exporter pollers + HA WebSocket + local sensors.
-    // Returns true when new data arrived or refresh_ms elapsed and frame was rendered.
+    // Advance non-blocking HTTP node_exporter pollers + Home Assistant WebSocket (no rendering).
+    void pollNetwork();
+    // Sample local sensors (if enabled) and render the latest snapshot into the framebuffer.
+    void sampleAndRender();
+    // Convenience combined step (pumps network + renders at refresh_ms cadence or immediately on forceRender).
     bool tick(bool forceRender = false);
+    // Render the current snapshot immediately without re-sampling local sensors.
     void renderNow();
 
     const Framebuffer &framebuffer() const { return view_.framebuffer(); }
@@ -87,8 +91,10 @@ private:
     uint64_t haNextPingMs_ = 0;
     uint32_t haReconnectDelayMs_ = 2000;
 
-    uint64_t lastRenderMs_ = 0;
+    uint64_t nextRenderMs_ = 0;
     uint64_t lastLocalSampleMs_ = 0;
+    bool hasRendered_ = false;
+    bool hasLocalSample_ = false;
     bool needRender_ = true;
 };
 

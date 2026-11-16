@@ -75,6 +75,8 @@ void NodeExporterParser::beginPoll() {
     sawMem_ = false;
     cpuTempC_ = -1.0;
     cpuTempPriority_ = 99;
+    hwmonChipNames_.clear();
+    hwmonTemps_.clear();
     curNet_.clear();
     gpuUtilPct_ = -1.0;
     gpuTempC_ = -1.0;
@@ -119,19 +121,19 @@ void NodeExporterParser::processLine(const std::string &line) {
     if (name == "node_memory_SwapTotal_bytes") { sawMem_ = true; swapTotalBytes_ = val; return; }
     if (name == "node_memory_SwapFree_bytes") { sawMem_ = true; swapFreeBytes_ = val; return; }
 
+    if (name == "node_hwmon_chip_names") {
+        std::string chip, chipName;
+        if (extractLabel(labels, "chip", chip) && extractLabel(labels, "chip_name", chipName)) {
+            hwmonChipNames_[chip] = chipName;
+        }
+        return;
+    }
+
     if (name == "node_hwmon_temp_celsius") {
         std::string chip, sensor;
         extractLabel(labels, "chip", chip);
         extractLabel(labels, "sensor", sensor);
-        int prio = 99;
-        if (chip.find("coretemp") != std::string::npos) prio = 0;
-        else if (chip.find("k10temp") != std::string::npos) prio = 1;
-        else if (chip.find("zenpower") != std::string::npos) prio = 2;
-        else if (chip.find("acpitz") != std::string::npos) prio = 3;
-        if (prio < cpuTempPriority_ || (prio == cpuTempPriority_ && sensor == "temp1")) {
-            cpuTempPriority_ = prio;
-            cpuTempC_ = val;
-        }
+        hwmonTemps_.push_back({chip, sensor, val});
         return;
     }
 
@@ -318,6 +320,11 @@ void NodeExporterParser::writeMetrics(const std::string &pfx, double cpuPct, dou
                 std::snprintf(buf, sizeof(buf), "%d%%", static_cast<int>(std::llround(gpuUtilPct_)));
             }
             out.set(pfx + "gpu.detail", buf);
+        } else if (gpuTempC_ >= 0.0) {
+            out.set(pfx + "gpu.temp", gpuTempC_);
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%d°C", static_cast<int>(std::llround(gpuTempC_)));
+            out.set(pfx + "gpu.detail", buf);
         }
 
         if (gpuMemUsedBytes_ >= 0.0 && (gpuMemTotalBytes_ > 0.0 || gpuMemFreeBytes_ >= 0.0)) {
@@ -360,6 +367,23 @@ void NodeExporterParser::endPoll(double nowSec, Snapshot &out, bool alsoWriteUnp
         hasPrevCpu_ = true;
     }
 
+    for (const auto &ht : hwmonTemps_) {
+        auto it = hwmonChipNames_.find(ht.chip);
+        const std::string &resolved = (it != hwmonChipNames_.end()) ? it->second : ht.chip;
+        int prio = 99;
+        if (resolved.find("coretemp") != std::string::npos) prio = 0;
+        else if (resolved.find("k10temp") != std::string::npos) prio = 1;
+        else if (resolved.find("zenpower") != std::string::npos) prio = 2;
+        else if (resolved.find("acpitz") != std::string::npos) prio = 3;
+        if (prio < 99 && (prio < cpuTempPriority_ || (prio == cpuTempPriority_ && ht.sensor == "temp1"))) {
+            cpuTempPriority_ = prio;
+            cpuTempC_ = ht.val;
+        }
+        if (gpuTempC_ < 0.0 && resolved.find("amdgpu") != std::string::npos && ht.sensor == "temp1") {
+            gpuTempC_ = ht.val;
+        }
+    }
+
     writeMetrics(prefix_, cpuPct, dtSec, out);
     if (alsoWriteUnprefixed && !prefix_.empty()) {
         writeMetrics("", cpuPct, dtSec, out);
@@ -395,31 +419,41 @@ void HaProtocol::onDisconnected() {
     authenticated_ = false;
 }
 
-static void applyHaEntity(const cJSON *stateObj,
+static bool applyHaEntity(const cJSON *stateObj,
                           const std::unordered_set<std::string> &watched,
                           Snapshot &states) {
-    if (!cJSON_IsObject(stateObj)) return;
+    if (!cJSON_IsObject(stateObj)) return false;
     const cJSON *entItem = cJSON_GetObjectItemCaseSensitive(stateObj, "entity_id");
-    if (!cJSON_IsString(entItem) || !entItem->valuestring) return;
+    if (!cJSON_IsString(entItem) || !entItem->valuestring) return false;
     const std::string entityId = entItem->valuestring;
-    if (!watched.empty() && watched.find(entityId) == watched.end()) return;
+    if (!watched.empty() && watched.find(entityId) == watched.end()) return false;
 
+    bool changed = false;
     const std::string baseKey = "ha." + entityId;
     const cJSON *st = cJSON_GetObjectItemCaseSensitive(stateObj, "state");
-    if (cJSON_IsString(st) && st->valuestring) states.set(baseKey, st->valuestring);
-    else if (cJSON_IsNumber(st)) states.set(baseKey, st->valuedouble);
-    else if (cJSON_IsBool(st)) states.set(baseKey, static_cast<bool>(cJSON_IsTrue(st)));
+    if (cJSON_IsString(st) && st->valuestring) {
+        changed |= states.setIfChanged(baseKey, SnapshotValue::fromString(st->valuestring));
+    } else if (cJSON_IsNumber(st)) {
+        changed |= states.setIfChanged(baseKey, SnapshotValue::fromDouble(st->valuedouble));
+    } else if (cJSON_IsBool(st)) {
+        changed |= states.setIfChanged(baseKey, SnapshotValue::fromBool(cJSON_IsTrue(st)));
+    }
 
     const cJSON *attrs = cJSON_GetObjectItemCaseSensitive(stateObj, "attributes");
     if (cJSON_IsObject(attrs)) {
         for (const cJSON *a = attrs->child; a != nullptr; a = a->next) {
             if (!a->string) continue;
             const std::string attrKey = baseKey + "." + a->string;
-            if (cJSON_IsString(a) && a->valuestring) states.set(attrKey, a->valuestring);
-            else if (cJSON_IsNumber(a)) states.set(attrKey, a->valuedouble);
-            else if (cJSON_IsBool(a)) states.set(attrKey, static_cast<bool>(cJSON_IsTrue(a)));
+            if (cJSON_IsString(a) && a->valuestring) {
+                changed |= states.setIfChanged(attrKey, SnapshotValue::fromString(a->valuestring));
+            } else if (cJSON_IsNumber(a)) {
+                changed |= states.setIfChanged(attrKey, SnapshotValue::fromDouble(a->valuedouble));
+            } else if (cJSON_IsBool(a)) {
+                changed |= states.setIfChanged(attrKey, SnapshotValue::fromBool(cJSON_IsTrue(a)));
+            }
         }
     }
+    return changed;
 }
 
 bool HaProtocol::onTextMessage(const std::string &msg, std::vector<std::string> &outMessages) {
@@ -482,15 +516,16 @@ bool HaProtocol::onTextMessage(const std::string &msg, std::vector<std::string> 
         const cJSON *idItem = cJSON_GetObjectItemCaseSensitive(obj, "id");
         const cJSON *okItem = cJSON_GetObjectItemCaseSensitive(obj, "success");
         if (cJSON_IsNumber(idItem) && static_cast<int>(idItem->valuedouble) == getStatesId_ && cJSON_IsTrue(okItem)) {
+            bool changed = false;
             const cJSON *res = cJSON_GetObjectItemCaseSensitive(obj, "result");
             if (cJSON_IsArray(res)) {
                 const int n = cJSON_GetArraySize(res);
                 for (int i = 0; i < n; ++i) {
-                    applyHaEntity(cJSON_GetArrayItem(res, i), watched_, states_);
+                    changed |= applyHaEntity(cJSON_GetArrayItem(res, i), watched_, states_);
                 }
             }
             cJSON_Delete(obj);
-            return true;
+            return changed;
         }
         cJSON_Delete(obj);
         return false;
@@ -504,9 +539,9 @@ bool HaProtocol::onTextMessage(const std::string &msg, std::vector<std::string> 
             const cJSON *data = cJSON_GetObjectItemCaseSensitive(ev, "data");
             const cJSON *newState = data ? cJSON_GetObjectItemCaseSensitive(data, "new_state") : nullptr;
             if (cJSON_IsObject(newState)) {
-                applyHaEntity(newState, watched_, states_);
+                const bool changed = applyHaEntity(newState, watched_, states_);
                 cJSON_Delete(obj);
-                return true;
+                return changed;
             }
         }
     }
