@@ -1,0 +1,4 @@
+version: "0.1.0"
+description: "YAD - Yet Another Dashboard (ESP32 / Pico 2 / Linux G19)"
+dependencies:
+  idf: ">=5.0"

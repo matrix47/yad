@@ -1,0 +1,243 @@
+{
+  "plugin": {
+    "id": "dashboard",
+    "name": "Dashboard"
+  },
+  "refresh_ms": 1000,
+  "theme": {
+    "background": "#0a0f16",
+    "foreground": "#e6edf3",
+    "muted": "#7d8fa3",
+    "accent": "#00a5db",
+    "font_family": "Terminus",
+    "font_size": 12,
+    "font_hinting": "none",
+    "outer_margin": 0,
+    "row_gap": 0,
+    "default_ninepatch": ":/dashboard/frames/card.9.png"
+  },
+  "home_assistant": {
+    "url": "https://homeassistant.local:8123",
+    "tls_verify": false,
+    "token_file": "~/.config/G19Daemon/ha_token"
+  },
+  "rows": [
+    {
+      "height": 48,
+      "gap": 0,
+      "columns": [
+        {
+          "width": 80,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "clock",
+          "card_params": {
+            "time_format": "HH:mm:ss",
+            "date_format": "",
+            "time_size": 16,
+            "show_icon": false,
+            "text_alignment": "center"
+          }
+        },
+        {
+          "width": 80,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "clock",
+          "card_params": {
+            "time_format": "",
+            "date_format": "ddd dd.MM",
+            "date_size": 16,
+            "date_color": "#e6edf3",
+            "show_icon": false,
+            "text_alignment": "center"
+          }
+        },
+        {
+          "width": 80,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "weather",
+          "card_params": {
+            "entity": "weather.home",
+            "unit": "°C",
+            "precision": 1,
+            "font_size": 18,
+            "icon_size": 16,
+            "min_update_ms": 10000
+          }
+        },
+        {
+          "width": 80,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "placeholder",
+          "card_params": {
+            "label": "HOME",
+            "icon": "home",
+            "font_size": 16,
+            "icon_size": 16
+          }
+        }
+      ]
+    },
+    {
+      "height": 48,
+      "gap": 0,
+      "columns": [
+        {
+          "width": "50%",
+          "card_type": "btop_bar",
+          "card_params": {
+            "source": "cpu.total",
+            "detail_source": "cpu.detail",
+            "label": "CPU",
+            "icon": "cpu",
+            "show_graph": true,
+            "show_bar": true
+          }
+        },
+        {
+          "width": "50%",
+          "card_type": "btop_bar",
+          "card_params": {
+            "source": "gpu.util",
+            "detail_source": "gpu.detail",
+            "label": "GPU",
+            "icon": "gpu",
+            "show_graph": true,
+            "show_bar": true
+          }
+        }
+      ]
+    },
+    {
+      "height": 48,
+      "gap": 0,
+      "columns": [
+        {
+          "width": "50%",
+          "card_type": "btop_bar",
+          "card_params": {
+            "source": "mem.used_pct",
+            "detail_source": "mem.detail",
+            "label": "MEM",
+            "icon": "memory",
+            "show_graph": true,
+            "show_bar": true
+          }
+        },
+        {
+          "width": "50%",
+          "card_type": "btop_bar",
+          "card_params": {
+            "source": "swap.used_pct",
+            "detail_source": "swap.detail",
+            "label": "SWAP",
+            "icon": "swap",
+            "show_graph": true,
+            "show_bar": true
+          }
+        }
+      ]
+    },
+    {
+      "height": 48,
+      "gap": 0,
+      "columns": [
+        {
+          "width": "50%",
+          "card_type": "net_activity",
+          "card_params": {
+            "iface": "wlan0",
+            "label": "WLAN",
+            "icon": "wlan"
+          }
+        },
+        {
+          "width": "50%",
+          "card_type": "net_activity",
+          "card_params": {
+            "iface": "eth0",
+            "label": "ETH",
+            "icon": "lan"
+          }
+        }
+      ]
+    },
+    {
+      "height": 24,
+      "gap": 0,
+      "columns": [
+        {
+          "width": 40,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "ha_binary",
+          "card_params": {
+            "entity": "binary_sensor.sensor_1",
+            "label": "S1"
+          }
+        },
+        {
+          "width": 40,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "ha_binary",
+          "card_params": {
+            "entity": "binary_sensor.sensor_2",
+            "label": "S2"
+          }
+        },
+        {
+          "width": 40,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "ha_binary",
+          "card_params": {
+            "entity": "binary_sensor.sensor_3",
+            "label": "S3"
+          }
+        },
+        {
+          "width": 40,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "ha_binary",
+          "card_params": {
+            "entity": "binary_sensor.sensor_4",
+            "label": "S4"
+          }
+        },
+        {
+          "width": 40,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "ha_binary",
+          "card_params": {
+            "entity": "binary_sensor.sensor_5",
+            "label": "S5"
+          }
+        },
+        {
+          "width": 40,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "ha_binary",
+          "card_params": {
+            "entity": "binary_sensor.sensor_6",
+            "label": "S6"
+          }
+        },
+        {
+          "width": 40,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "ha_binary",
+          "card_params": {
+            "entity": "binary_sensor.sensor_7",
+            "label": "S7"
+          }
+        },
+        {
+          "width": 40,
+          "ninepatch": ":/dashboard/frames/compact.9.png",
+          "card_type": "ha_binary",
+          "card_params": {
+            "entity": "binary_sensor.sensor_8",
+            "label": "S8"
+          }
+        }
+      ]
+    }
+  ]
+}
