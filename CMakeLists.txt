@@ -36,6 +36,7 @@ set(YAD_REGEN_ASSETS "AUTO" CACHE STRING "Regenerate C++ asset tables via tools/
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
+find_package(ZLIB QUIET)
 
 set(YAD_ASSETS_CPP "${CMAKE_CURRENT_SOURCE_DIR}/src/core/generated_assets.cpp")
 set(_yad_do_regen OFF)
@@ -93,6 +94,10 @@ set_target_properties(yad PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 add_library(yad::core ALIAS yad)
 target_include_directories(yad PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(yad PUBLIC PkgConfig::CJSON)
+if(ZLIB_FOUND)
+    target_compile_definitions(yad PUBLIC YAD_HAS_ZLIB=1)
+    target_link_libraries(yad PUBLIC ZLIB::ZLIB)
+endif()
 
 # 2. POSIX + mbedtls3 platform library (for desktop yad_preview & G19 yad plugin)
 if(YAD_BUILD_POSIX)

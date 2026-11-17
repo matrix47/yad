@@ -103,7 +103,9 @@ struct HomeAssistantConfig {
 struct NodeExporterTarget {
     std::string name;  // e.g. "pc", "nas", or "default"
     std::vector<std::string> urls;
-    int pollMs = 1000;
+    int pollMs = 2000;
+    int inactivePollMs = 0;  // 0 = pause polling when exporter isn't used on current page
+    bool collectFilter = true;  // append ?collect[]=... when querying /metrics
     bool tlsVerify = true;
 };
 

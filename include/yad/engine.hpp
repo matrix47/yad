@@ -55,6 +55,7 @@ public:
 private:
     struct ExporterJob {
         NodeExporterTarget target;
+        std::vector<std::string> filteredUrls;
         NodeExporterParser parser;
         std::unique_ptr<ITcpTlsStream> stream;
         HttpResponseParser http;
@@ -63,9 +64,13 @@ private:
         std::string txPending;
         uint64_t nextPollMs = 0;
         bool active = false;
+        bool useFiltered = true;
+        bool usedOnCurrentPage = true;
+        bool hasWarmedDelta = false;
     };
 
     void setupExporters();
+    void updateExporterUsageForCurrentPage();
     void setupHa();
     void stepExporters(uint64_t nowMs, bool &dataChanged);
     void stepHa(uint64_t nowMs, bool &dataChanged);

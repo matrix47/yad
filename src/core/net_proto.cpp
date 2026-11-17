@@ -4,6 +4,9 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#ifdef YAD_HAS_ZLIB
+#include <zlib.h>
+#endif
 
 namespace yad {
 
@@ -71,14 +74,32 @@ ParsedUrl ParsedUrl::parse(const std::string &raw, bool forWebSocket) {
     return out;
 }
 
-std::string buildHttpGetRequest(const ParsedUrl &url) {
+std::string buildHttpGetRequest(const ParsedUrl &url, bool acceptGzip) {
     std::string req = "GET " + url.path + " HTTP/1.1\r\n";
     req += "Host: " + url.host;
     if ((url.isTls && url.port != 443) || (!url.isTls && url.port != 80)) {
         req += ":" + std::to_string(url.port);
     }
+    if (acceptGzip) {
+        req += "\r\nAccept-Encoding: gzip";
+    }
     req += "\r\nConnection: close\r\nUser-Agent: yad/1.0\r\n\r\n";
     return req;
+}
+
+struct HttpResponseParser::GzipCtx {
+#ifdef YAD_HAS_ZLIB
+    z_stream zs{};
+#endif
+    bool active = false;
+};
+
+HttpResponseParser::HttpResponseParser() = default;
+
+HttpResponseParser::~HttpResponseParser() {
+    reset();
+    delete gzipCtx_;
+    gzipCtx_ = nullptr;
 }
 
 void HttpResponseParser::reset() {
@@ -87,9 +108,62 @@ void HttpResponseParser::reset() {
     statusCode_ = 0;
     contentLength_ = 0;
     bodyReceived_ = 0;
+    gzipEncoded_ = false;
+#ifdef YAD_HAS_ZLIB
+    if (gzipCtx_ && gzipCtx_->active) {
+        ::inflateEnd(&gzipCtx_->zs);
+        gzipCtx_->active = false;
+    }
+#endif
     buf_.clear();
     chunkState_ = ChunkState::SizeLine;
     chunkRemaining_ = 0;
+}
+
+void HttpResponseParser::emitBody(const char *data,
+                                  size_t len,
+                                  const std::function<void(const char *, size_t)> &onBodyChunk) {
+    if (!data || len == 0 || !onBodyChunk) return;
+    if (!gzipEncoded_) {
+        onBodyChunk(data, len);
+        return;
+    }
+#ifdef YAD_HAS_ZLIB
+    if (!gzipCtx_) gzipCtx_ = new GzipCtx();
+    if (!gzipCtx_->active) {
+        gzipCtx_->zs = {};
+        if (::inflateInit2(&gzipCtx_->zs, 15 + 16) != Z_OK) {
+            state_ = State::Error;
+            return;
+        }
+        gzipCtx_->active = true;
+    }
+    gzipCtx_->zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data));
+    gzipCtx_->zs.avail_in = static_cast<uInt>(len);
+    char outBuf[4096];
+    while (gzipCtx_->zs.avail_in > 0) {
+        gzipCtx_->zs.next_out = reinterpret_cast<Bytef *>(outBuf);
+        gzipCtx_->zs.avail_out = sizeof(outBuf);
+        const int rc = ::inflate(&gzipCtx_->zs, Z_NO_FLUSH);
+        const size_t have = sizeof(outBuf) - gzipCtx_->zs.avail_out;
+        if (have > 0) {
+            onBodyChunk(outBuf, have);
+        }
+        if (rc == Z_STREAM_END) {
+            ::inflateEnd(&gzipCtx_->zs);
+            gzipCtx_->active = false;
+            break;
+        }
+        if (rc != Z_OK && rc != Z_BUF_ERROR) {
+            ::inflateEnd(&gzipCtx_->zs);
+            gzipCtx_->active = false;
+            state_ = State::Error;
+            break;
+        }
+    }
+#else
+    onBodyChunk(data, len);
+#endif
 }
 
 HttpResponseParser::State HttpResponseParser::feed(
@@ -137,6 +211,8 @@ HttpResponseParser::State HttpResponseParser::feed(
             } else if (key == "content-length" && bodyMode_ != BodyMode::Chunked) {
                 bodyMode_ = BodyMode::ContentLength;
                 contentLength_ = static_cast<size_t>(std::strtoull(val.c_str(), nullptr, 10));
+            } else if (key == "content-encoding" && val.find("gzip") != std::string::npos) {
+                gzipEncoded_ = true;
             }
         }
 
@@ -150,18 +226,18 @@ HttpResponseParser::State HttpResponseParser::feed(
     if (state_ == State::Body) {
         if (bodyMode_ == BodyMode::UntilEof) {
             if (!buf_.empty()) {
-                if (onBodyChunk) onBodyChunk(buf_.data(), buf_.size());
+                emitBody(buf_.data(), buf_.size(), onBodyChunk);
                 buf_.clear();
             }
         } else if (bodyMode_ == BodyMode::ContentLength) {
             const size_t need = contentLength_ - bodyReceived_;
             const size_t take = std::min(need, buf_.size());
             if (take > 0) {
-                if (onBodyChunk) onBodyChunk(buf_.data(), take);
+                emitBody(buf_.data(), take, onBodyChunk);
                 buf_.erase(0, take);
                 bodyReceived_ += take;
             }
-            if (bodyReceived_ >= contentLength_) {
+            if (state_ != State::Error && bodyReceived_ >= contentLength_) {
                 state_ = State::Done;
             }
         } else if (bodyMode_ == BodyMode::Chunked) {
@@ -182,7 +258,7 @@ HttpResponseParser::State HttpResponseParser::feed(
                 } else if (chunkState_ == ChunkState::Data) {
                     const size_t take = std::min(chunkRemaining_, buf_.size());
                     if (take == 0) break;
-                    if (onBodyChunk) onBodyChunk(buf_.data(), take);
+                    emitBody(buf_.data(), take, onBodyChunk);
                     buf_.erase(0, take);
                     chunkRemaining_ -= take;
                     if (chunkRemaining_ == 0) {

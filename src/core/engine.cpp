@@ -34,16 +34,19 @@ void YadEngine::setPixelFormat(PixelFormat format) {
 
 void YadEngine::nextPage() {
     view_.nextPage();
+    updateExporterUsageForCurrentPage();
     needRender_ = true;
 }
 
 void YadEngine::prevPage() {
     view_.prevPage();
+    updateExporterUsageForCurrentPage();
     needRender_ = true;
 }
 
 void YadEngine::setPage(int idx) {
     view_.setPage(idx);
+    updateExporterUsageForCurrentPage();
     needRender_ = true;
 }
 
@@ -74,20 +77,142 @@ void YadEngine::setConfig(const DashboardConfig &config) {
     needRender_ = true;
 }
 
+static std::string trimLower(std::string s) {
+    size_t a = 0;
+    while (a < s.size() && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) ++a;
+    size_t b = s.size();
+    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n')) --b;
+    s = s.substr(a, b - a);
+    for (char &ch : s) {
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    }
+    return s;
+}
+
+static bool columnTargetsExporter(const ColumnConfig &col,
+                                  const std::string &exporterName,
+                                  bool isDefaultFallback,
+                                  bool hasLocalSys) {
+    if (col.cardType != "btop_bar" && col.cardType != "net_activity") return false;
+    const ParamMap &p = col.cardParams;
+    std::string host = p.contains("node_exporter") ? p.getString("node_exporter") : p.getString("source_host");
+    host = trimLower(host);
+    const std::string nameLower = trimLower(exporterName);
+    if (!host.empty() && host != "local") {
+        return host == nameLower;
+    }
+    return isDefaultFallback || (!hasLocalSys && nameLower == "default");
+}
+
+static std::string buildCollectSuffix(const DashboardConfig &cfg,
+                                      const std::string &exporterName,
+                                      bool isDefaultFallback,
+                                      bool hasLocalSys) {
+    bool needCpu = false;
+    bool needMem = false;
+    bool needHwmon = false;
+    bool needNet = false;
+    bool needTextfile = false;
+
+    for (const auto &page : cfg.pages) {
+        for (const auto &row : page.rows) {
+            for (const auto &col : row.columns) {
+                if (!columnTargetsExporter(col, exporterName, isDefaultFallback, hasLocalSys)) continue;
+                if (col.cardType == "net_activity") {
+                    needNet = true;
+                } else if (col.cardType == "btop_bar") {
+                    const std::string s = trimLower(col.cardParams.getString("source"));
+                    const std::string d = trimLower(col.cardParams.getString("detail_source"));
+                    if (s.rfind("cpu.", 0) == 0 || d.rfind("cpu.", 0) == 0) {
+                        needCpu = true;
+                        needHwmon = true;
+                    }
+                    if (s.rfind("mem.", 0) == 0 || s.rfind("swap.", 0) == 0 ||
+                        d.rfind("mem.", 0) == 0 || d.rfind("swap.", 0) == 0) {
+                        needMem = true;
+                    }
+                    if (s.rfind("gpu.", 0) == 0 || d.rfind("gpu.", 0) == 0) {
+                        needTextfile = true;
+                        needHwmon = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!needCpu && !needMem && !needHwmon && !needNet && !needTextfile) {
+        needCpu = needMem = needHwmon = needNet = needTextfile = true;
+    }
+
+    std::string qs = "?";
+    auto add = [&](const char *name) {
+        if (qs.size() > 1) qs += "&";
+        qs += "collect[]=";
+        qs += name;
+    };
+    if (needCpu) add("cpu");
+    if (needMem) add("meminfo");
+    if (needHwmon) add("hwmon");
+    if (needNet) add("netdev");
+    if (needTextfile) add("textfile");
+    return qs;
+}
+
 void YadEngine::setupExporters() {
     for (auto &ex : exporters_) {
         if (ex->stream) ex->stream->close();
     }
     exporters_.clear();
 
-    for (const auto &t : config_.nodeExporters) {
+    for (size_t i = 0; i < config_.nodeExporters.size(); ++i) {
+        const auto &t = config_.nodeExporters[i];
         if (t.urls.empty()) continue;
         auto job = std::make_unique<ExporterJob>();
         job->target = t;
+        const bool isDefaultFallback = (!localSys_ && i == 0);
+        const std::string collectQs = buildCollectSuffix(config_, t.name, isDefaultFallback, localSys_ != nullptr);
+        job->filteredUrls.reserve(t.urls.size());
+        for (const auto &u : t.urls) {
+            const ParsedUrl pu = ParsedUrl::parse(u, false);
+            if (t.collectFilter && pu.valid && pu.path.find('?') == std::string::npos &&
+                (pu.path == "/metrics" ||
+                 (pu.path.size() >= 8 && pu.path.compare(pu.path.size() - 8, 8, "/metrics") == 0))) {
+                job->filteredUrls.push_back(u + collectQs);
+            } else {
+                job->filteredUrls.push_back(u);
+            }
+        }
+        job->useFiltered = t.collectFilter;
         const std::string pfx = (t.name.empty() || t.name == "default") ? std::string() : (t.name + ".");
         job->parser.setPrefix(pfx);
         job->nextPollMs = 0;
         exporters_.push_back(std::move(job));
+    }
+    updateExporterUsageForCurrentPage();
+}
+
+void YadEngine::updateExporterUsageForCurrentPage() {
+    if (config_.pages.empty()) return;
+    const int idx = std::clamp(view_.currentPage(), 0, static_cast<int>(config_.pages.size()) - 1);
+    const PageConfig &page = config_.pages[idx];
+
+    for (size_t i = 0; i < exporters_.size(); ++i) {
+        ExporterJob &ex = *exporters_[i];
+        const bool isDefaultFallback = (!localSys_ && i == 0);
+        bool used = false;
+        for (const auto &row : page.rows) {
+            for (const auto &col : row.columns) {
+                if (columnTargetsExporter(col, ex.target.name, isDefaultFallback, localSys_ != nullptr)) {
+                    used = true;
+                    break;
+                }
+            }
+            if (used) break;
+        }
+        if (used && !ex.usedOnCurrentPage) {
+            ex.nextPollMs = 0;
+        }
+        ex.usedOnCurrentPage = used;
     }
 }
 
@@ -169,6 +294,7 @@ void YadEngine::stepExporters(uint64_t nowMs, bool &dataChanged) {
     for (size_t i = 0; i < exporters_.size(); ++i) {
         ExporterJob &ex = *exporters_[i];
         if (!ex.active) {
+            if (!ex.usedOnCurrentPage && ex.target.inactivePollMs <= 0) continue;
             if (nowMs < ex.nextPollMs) continue;
             ex.active = true;
             ex.urlIndex = 0;
@@ -176,23 +302,35 @@ void YadEngine::stepExporters(uint64_t nowMs, bool &dataChanged) {
             ex.stream.reset();
         }
 
+        const auto &urls = ex.useFiltered ? ex.filteredUrls : ex.target.urls;
+
         if (!ex.stream) {
-            if (ex.urlIndex >= ex.target.urls.size()) {
+            if (ex.urlIndex >= urls.size()) {
                 const bool defaultFallback = (!localSys_ && i == 0);
                 ex.parser.endPoll(nowMs / 1000.0, snapshot_, defaultFallback);
                 ex.active = false;
-                ex.nextPollMs = nowMs + static_cast<uint64_t>(std::max(250, ex.target.pollMs));
+                if (!ex.hasWarmedDelta) {
+                    ex.hasWarmedDelta = true;
+                    ex.nextPollMs = nowMs + 500;
+                } else {
+                    const int iv = ex.usedOnCurrentPage ? ex.target.pollMs : ex.target.inactivePollMs;
+                    ex.nextPollMs = nowMs + static_cast<uint64_t>(std::max(250, iv));
+                }
                 dataChanged = true;
                 continue;
             }
 
-            ex.currentUrl = ParsedUrl::parse(ex.target.urls[ex.urlIndex], false);
+            ex.currentUrl = ParsedUrl::parse(urls[ex.urlIndex], false);
             if (!ex.currentUrl.valid) {
                 ++ex.urlIndex;
                 continue;
             }
             ex.http.reset();
-            ex.txPending = buildHttpGetRequest(ex.currentUrl);
+#ifdef YAD_HAS_ZLIB
+            ex.txPending = buildHttpGetRequest(ex.currentUrl, true);
+#else
+            ex.txPending = buildHttpGetRequest(ex.currentUrl, false);
+#endif
             ex.stream = platform_.createStream();
             if (!ex.stream || !ex.stream->beginConnect(ex.currentUrl.host, ex.currentUrl.port,
                                                        ex.currentUrl.isTls, ex.target.tlsVerify)) {
@@ -231,14 +369,26 @@ void YadEngine::stepExporters(uint64_t nowMs, bool &dataChanged) {
                         ex.parser.feed(chunk, len);
                     });
                     if (hState == HttpResponseParser::State::Done || hState == HttpResponseParser::State::Error) {
+                        const int code = ex.http.statusCode();
                         ex.stream.reset();
-                        ++ex.urlIndex;
+                        if (ex.useFiltered && code == 400) {
+                            ex.useFiltered = false;
+                            ex.parser.beginPoll();
+                        } else {
+                            ++ex.urlIndex;
+                        }
                         break;
                     }
                 } else if (nr < 0) {
                     ex.http.finishEof();
+                    const int code = ex.http.statusCode();
                     ex.stream.reset();
-                    ++ex.urlIndex;
+                    if (ex.useFiltered && code == 400) {
+                        ex.useFiltered = false;
+                        ex.parser.beginPoll();
+                    } else {
+                        ++ex.urlIndex;
+                    }
                     break;
                 } else {
                     break;

@@ -19,10 +19,15 @@ struct ParsedUrl {
     static ParsedUrl parse(const std::string &raw, bool forWebSocket = false);
 };
 
-// Pure C++ streaming HTTP/1.1 response parser (supports Content-Length, Transfer-Encoding: chunked, and EOF).
+// Pure C++ streaming HTTP/1.1 response parser (supports Content-Length, Transfer-Encoding: chunked, EOF, and optional gzip).
 class HttpResponseParser {
 public:
     enum class State { Headers, Body, Done, Error };
+
+    HttpResponseParser();
+    ~HttpResponseParser();
+    HttpResponseParser(const HttpResponseParser &) = delete;
+    HttpResponseParser &operator=(const HttpResponseParser &) = delete;
 
     void reset();
     State feed(const char *data, size_t len, const std::function<void(const char *, size_t)> &onBodyChunk);
@@ -33,12 +38,17 @@ public:
 
 private:
     enum class BodyMode { Unknown, ContentLength, Chunked, UntilEof };
+    struct GzipCtx;
+
+    void emitBody(const char *data, size_t len, const std::function<void(const char *, size_t)> &onBodyChunk);
 
     State state_ = State::Headers;
     BodyMode bodyMode_ = BodyMode::Unknown;
     int statusCode_ = 0;
     size_t contentLength_ = 0;
     size_t bodyReceived_ = 0;
+    bool gzipEncoded_ = false;
+    GzipCtx *gzipCtx_ = nullptr;
     std::string buf_;
 
     // Chunked decoder state
@@ -47,7 +57,7 @@ private:
     size_t chunkRemaining_ = 0;
 };
 
-std::string buildHttpGetRequest(const ParsedUrl &url);
+std::string buildHttpGetRequest(const ParsedUrl &url, bool acceptGzip = false);
 
 // Pure C++ RFC 6455 WebSocket client framer (upgrade handshake + masked TX + RX frames).
 class WebSocketFramer {

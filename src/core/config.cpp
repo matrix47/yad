@@ -208,13 +208,20 @@ static void parseNodeExporters(const cJSON *ne, std::vector<NodeExporterTarget> 
 
     if (!cJSON_IsObject(ne)) return;
 
-    // Legacy object form: { "poll_ms": 1000, "urls": [...] }
+    auto parseTargetOpts = [](const cJSON *obj, NodeExporterTarget &t) {
+        t.pollMs = std::max(250, jsonInt(obj, "poll_ms", 2000));
+        const int inact = jsonInt(obj, "inactive_poll_ms", 0);
+        t.inactivePollMs = (inact <= 0) ? 0 : std::max(250, inact);
+        t.collectFilter = jsonBool(obj, "collect_filter", true);
+        t.tlsVerify = jsonBool(obj, "tls_verify", true);
+    };
+
+    // Legacy object form: { "poll_ms": 2000, "urls": [...] }
     const cJSON *legacyUrls = cJSON_GetObjectItemCaseSensitive(ne, "urls");
     if (cJSON_IsArray(legacyUrls)) {
         NodeExporterTarget t;
         t.name = "default";
-        t.pollMs = std::max(250, jsonInt(ne, "poll_ms", 1000));
-        t.tlsVerify = jsonBool(ne, "tls_verify", true);
+        parseTargetOpts(ne, t);
         pushUrlArray(legacyUrls, t.urls);
         if (!t.urls.empty()) out.push_back(std::move(t));
         return;
@@ -230,8 +237,7 @@ static void parseNodeExporters(const cJSON *ne, std::vector<NodeExporterTarget> 
         } else if (cJSON_IsArray(child)) {
             pushUrlArray(child, t.urls);
         } else if (cJSON_IsObject(child)) {
-            t.pollMs = std::max(250, jsonInt(child, "poll_ms", 1000));
-            t.tlsVerify = jsonBool(child, "tls_verify", true);
+            parseTargetOpts(child, t);
             const std::string singleUrl = jsonStr(child, "url");
             if (!singleUrl.empty()) t.urls.push_back(singleUrl);
             const cJSON *arr = cJSON_GetObjectItemCaseSensitive(child, "urls");
