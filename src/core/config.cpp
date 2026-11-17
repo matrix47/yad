@@ -300,6 +300,8 @@ bool DashboardConfig::loadFromJson(const std::string &jsonText, DashboardConfig 
             if (!cJSON_IsObject(pObj)) continue;
             PageConfig page;
             page.name = jsonStr(pObj, "name", "Page");
+            const int pr = jsonInt(pObj, "refresh_ms", 0);
+            page.refreshMs = (pr > 0) ? std::max(100, pr) : 0;
             page.rows = parseRows(cJSON_GetObjectItemCaseSensitive(pObj, "rows"));
             cfg.pages.push_back(std::move(page));
         }

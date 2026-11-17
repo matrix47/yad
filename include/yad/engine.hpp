@@ -32,14 +32,18 @@ public:
     int pageCount() const { return view_.pageCount(); }
     int currentPage() const { return view_.currentPage(); }
 
-    // Advance non-blocking HTTP node_exporter pollers + Home Assistant WebSocket (no rendering).
-    void pollNetwork();
-    // Sample local sensors (if enabled) and render the latest snapshot into the framebuffer.
-    void sampleAndRender();
-    // Convenience combined step (pumps network + renders at refresh_ms cadence or immediately on forceRender).
-    bool tick(bool forceRender = false);
-    // Render the current snapshot immediately without re-sampling local sensors.
-    void renderNow();
+    // Configured page refresh interval in milliseconds (default 1000, min 100).
+    int getIntervalMs() const;
+
+    // Non-blocking step: polls Home Assistant WebSocket updates and advances any
+    // active/needed node_exporter HTTP fetches into snapshot_.
+    void step();
+
+    // Renders and returns the current framebuffer:
+    // - sampleSensors = true (periodic interval pull): samples local sensors and
+    //   marks active node_exporters as needed when their poll_ms period is due.
+    // - sampleSensors = false (e.g. page navigation): renders current snapshot immediately.
+    const Framebuffer &getFrame(bool sampleSensors = true);
 
     const Framebuffer &framebuffer() const { return view_.framebuffer(); }
     const uint32_t *pixels32() const { return view_.pixels32(); }
@@ -62,8 +66,11 @@ private:
         ParsedUrl currentUrl;
         size_t urlIndex = 0;
         std::string txPending;
-        uint64_t nextPollMs = 0;
+        uint64_t nextRetryMs = 0;
+        int framesUntilFetch = 1;
+        bool needed = true;
         bool active = false;
+        bool anySuccess = false;
         bool useFiltered = true;
         bool usedOnCurrentPage = true;
         bool hasWarmedDelta = false;
@@ -72,8 +79,8 @@ private:
     void setupExporters();
     void updateExporterUsageForCurrentPage();
     void setupHa();
-    void stepExporters(uint64_t nowMs, bool &dataChanged);
-    void stepHa(uint64_t nowMs, bool &dataChanged);
+    void stepExporters(uint64_t nowMs);
+    void stepHa(uint64_t nowMs);
     std::string resolveHaToken(const HomeAssistantConfig &ha) const;
 
     IPlatform &platform_;
@@ -96,11 +103,7 @@ private:
     uint64_t haNextPingMs_ = 0;
     uint32_t haReconnectDelayMs_ = 2000;
 
-    uint64_t nextRenderMs_ = 0;
-    uint64_t lastLocalSampleMs_ = 0;
-    bool hasRendered_ = false;
     bool hasLocalSample_ = false;
-    bool needRender_ = true;
 };
 
 }  // namespace yad

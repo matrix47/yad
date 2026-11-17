@@ -189,21 +189,20 @@ int main(int argc, char *argv[]) {
     // Headless PNG dump mode
     if (!dumpPath.empty()) {
         const uint64_t tStart = platform.nowMs();
-        engine.tick(true);
+        engine.getFrame(true);
         while ((platform.nowMs() - tStart) < static_cast<uint64_t>(waitMs)) {
-            engine.tick(false);
+            engine.step();
             usleep(10000);
         }
-        // Extra poll tick if exporters are active so counter deltas settle
+        // Extra step window if exporters are active so counter deltas settle
         if (engine.exporterCount() > 0) {
             const uint64_t t2 = platform.nowMs();
-            while ((platform.nowMs() - t2) < 1100) {
-                engine.tick(false);
+            while ((platform.nowMs() - t2) < 600) {
+                engine.step();
                 usleep(10000);
             }
         }
-        engine.tick(true);
-        if (!saveFramebufferPng(dumpPath, engine.framebuffer())) {
+        if (!saveFramebufferPng(dumpPath, engine.getFrame(true))) {
             std::fprintf(stderr, "Failed to save PNG: %s\n", dumpPath.c_str());
             return 1;
         }
@@ -256,9 +255,11 @@ int main(int argc, char *argv[]) {
         SDL_SetWindowTitle(window, title);
     };
 
-    engine.tick(true);
+    engine.getFrame(true);
+    engine.step();
     updateTitle();
     uint64_t lastTitleMs = platform.nowMs();
+    uint64_t nextRenderMs = lastTitleMs + static_cast<uint64_t>(engine.getIntervalMs());
 
     bool running = true;
     while (running) {
@@ -272,21 +273,27 @@ int main(int argc, char *argv[]) {
                     running = false;
                 } else if (key == SDLK_RIGHT) {
                     engine.nextPage();
-                    engine.renderNow();
+                    engine.getFrame(false);
+                    engine.step();
+                    nextRenderMs = platform.nowMs() + static_cast<uint64_t>(engine.getIntervalMs());
                     updateTitle();
                 } else if (key == SDLK_LEFT) {
                     engine.prevPage();
-                    engine.renderNow();
+                    engine.getFrame(false);
+                    engine.step();
+                    nextRenderMs = platform.nowMs() + static_cast<uint64_t>(engine.getIntervalMs());
                     updateTitle();
                 } else if (key == SDLK_R) {
                     if (loadEngineConfig(engine, configPath, cliExporters, err)) {
-                        engine.renderNow();
+                        engine.getFrame(true);
+                        engine.step();
+                        nextRenderMs = platform.nowMs() + static_cast<uint64_t>(engine.getIntervalMs());
                         updateTitle();
                     }
                 } else if (key == SDLK_F) {
                     format = (format == yad::PixelFormat::RGB32) ? yad::PixelFormat::RGB565 : yad::PixelFormat::RGB32;
                     engine.setPixelFormat(format);
-                    engine.renderNow();
+                    engine.getFrame(false);
                     SDL_DestroyTexture(texture);
                     texture = createTex(format);
                     updateTitle();
@@ -308,13 +315,23 @@ int main(int argc, char *argv[]) {
                 off += static_cast<ssize_t>(sizeof(struct inotify_event)) + iev->len;
             }
             if (reload && loadEngineConfig(engine, configPath, cliExporters, err)) {
-                engine.renderNow();
+                engine.getFrame(true);
+                engine.step();
+                nextRenderMs = platform.nowMs() + static_cast<uint64_t>(engine.getIntervalMs());
                 updateTitle();
             }
         }
 
-        engine.tick(false);
+        engine.step();
         const uint64_t now = platform.nowMs();
+        const uint64_t interval = static_cast<uint64_t>(engine.getIntervalMs());
+        if (now >= nextRenderMs) {
+            engine.getFrame(true);
+            nextRenderMs += interval;
+            if (now >= nextRenderMs + interval) {
+                nextRenderMs = now + interval;
+            }
+        }
         if (now - lastTitleMs >= 500) {
             updateTitle();
             lastTitleMs = now;

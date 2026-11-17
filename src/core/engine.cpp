@@ -24,30 +24,35 @@ YadEngine::~YadEngine() {
 
 void YadEngine::resize(int width, int height) {
     view_.resize(width, height);
-    needRender_ = true;
 }
 
 void YadEngine::setPixelFormat(PixelFormat format) {
     view_.setPixelFormat(format);
-    needRender_ = true;
 }
 
 void YadEngine::nextPage() {
     view_.nextPage();
     updateExporterUsageForCurrentPage();
-    needRender_ = true;
 }
 
 void YadEngine::prevPage() {
     view_.prevPage();
     updateExporterUsageForCurrentPage();
-    needRender_ = true;
 }
 
 void YadEngine::setPage(int idx) {
     view_.setPage(idx);
     updateExporterUsageForCurrentPage();
-    needRender_ = true;
+}
+
+int YadEngine::getIntervalMs() const {
+    if (!config_.pages.empty()) {
+        const int idx = std::clamp(view_.currentPage(), 0, static_cast<int>(config_.pages.size()) - 1);
+        if (config_.pages[idx].refreshMs > 0) {
+            return std::max(100, config_.pages[idx].refreshMs);
+        }
+    }
+    return std::max(100, config_.refreshMs);
 }
 
 bool YadEngine::loadConfigFromJson(const std::string &jsonText, std::string *error) {
@@ -71,10 +76,7 @@ void YadEngine::setConfig(const DashboardConfig &config) {
     view_.setConfig(config_);
     setupExporters();
     setupHa();
-    hasRendered_ = false;
     hasLocalSample_ = false;
-    nextRenderMs_ = 0;
-    needRender_ = true;
 }
 
 static std::string trimLower(std::string s) {
@@ -185,7 +187,10 @@ void YadEngine::setupExporters() {
         job->useFiltered = t.collectFilter;
         const std::string pfx = (t.name.empty() || t.name == "default") ? std::string() : (t.name + ".");
         job->parser.setPrefix(pfx);
-        job->nextPollMs = 0;
+        const int interval = getIntervalMs();
+        job->needed = true;
+        job->framesUntilFetch = std::max(1, (t.pollMs + interval / 2) / interval);
+        job->nextRetryMs = 0;
         exporters_.push_back(std::move(job));
     }
     updateExporterUsageForCurrentPage();
@@ -195,6 +200,7 @@ void YadEngine::updateExporterUsageForCurrentPage() {
     if (config_.pages.empty()) return;
     const int idx = std::clamp(view_.currentPage(), 0, static_cast<int>(config_.pages.size()) - 1);
     const PageConfig &page = config_.pages[idx];
+    const int interval = getIntervalMs();
 
     for (size_t i = 0; i < exporters_.size(); ++i) {
         ExporterJob &ex = *exporters_[i];
@@ -210,7 +216,9 @@ void YadEngine::updateExporterUsageForCurrentPage() {
             if (used) break;
         }
         if (used && !ex.usedOnCurrentPage) {
-            ex.nextPollMs = 0;
+            ex.needed = true;
+            ex.framesUntilFetch = std::max(1, (ex.target.pollMs + interval / 2) / interval);
+            ex.nextRetryMs = 0;
         }
         ex.usedOnCurrentPage = used;
     }
@@ -290,13 +298,15 @@ void YadEngine::setupHa() {
     haStatus_ = "connecting...";
 }
 
-void YadEngine::stepExporters(uint64_t nowMs, bool &dataChanged) {
+void YadEngine::stepExporters(uint64_t nowMs) {
     for (size_t i = 0; i < exporters_.size(); ++i) {
         ExporterJob &ex = *exporters_[i];
         if (!ex.active) {
-            if (!ex.usedOnCurrentPage && ex.target.inactivePollMs <= 0) continue;
-            if (nowMs < ex.nextPollMs) continue;
+            if (!ex.usedOnCurrentPage) continue;
+            if (!ex.needed) continue;
+            if (nowMs < ex.nextRetryMs) continue;
             ex.active = true;
+            ex.anySuccess = false;
             ex.urlIndex = 0;
             ex.parser.beginPoll();
             ex.stream.reset();
@@ -306,17 +316,22 @@ void YadEngine::stepExporters(uint64_t nowMs, bool &dataChanged) {
 
         if (!ex.stream) {
             if (ex.urlIndex >= urls.size()) {
-                const bool defaultFallback = (!localSys_ && i == 0);
-                ex.parser.endPoll(nowMs / 1000.0, snapshot_, defaultFallback);
                 ex.active = false;
-                if (!ex.hasWarmedDelta) {
-                    ex.hasWarmedDelta = true;
-                    ex.nextPollMs = nowMs + 500;
+                if (ex.anySuccess) {
+                    const bool defaultFallback = (!localSys_ && i == 0);
+                    ex.parser.endPoll(nowMs / 1000.0, snapshot_, defaultFallback);
+                    if (!ex.hasWarmedDelta) {
+                        ex.hasWarmedDelta = true;
+                        ex.needed = true;
+                        ex.nextRetryMs = nowMs + 400;
+                    } else {
+                        ex.needed = false;
+                        ex.nextRetryMs = 0;
+                    }
                 } else {
-                    const int iv = ex.usedOnCurrentPage ? ex.target.pollMs : ex.target.inactivePollMs;
-                    ex.nextPollMs = nowMs + static_cast<uint64_t>(std::max(250, iv));
+                    ex.needed = true;
+                    ex.nextRetryMs = nowMs + 1000;
                 }
-                dataChanged = true;
                 continue;
             }
 
@@ -370,6 +385,9 @@ void YadEngine::stepExporters(uint64_t nowMs, bool &dataChanged) {
                     });
                     if (hState == HttpResponseParser::State::Done || hState == HttpResponseParser::State::Error) {
                         const int code = ex.http.statusCode();
+                        if (hState == HttpResponseParser::State::Done && code >= 200 && code < 300) {
+                            ex.anySuccess = true;
+                        }
                         ex.stream.reset();
                         if (ex.useFiltered && code == 400) {
                             ex.useFiltered = false;
@@ -382,6 +400,9 @@ void YadEngine::stepExporters(uint64_t nowMs, bool &dataChanged) {
                 } else if (nr < 0) {
                     ex.http.finishEof();
                     const int code = ex.http.statusCode();
+                    if (ex.http.state() == HttpResponseParser::State::Done && code >= 200 && code < 300) {
+                        ex.anySuccess = true;
+                    }
                     ex.stream.reset();
                     if (ex.useFiltered && code == 400) {
                         ex.useFiltered = false;
@@ -398,7 +419,7 @@ void YadEngine::stepExporters(uint64_t nowMs, bool &dataChanged) {
     }
 }
 
-void YadEngine::stepHa(uint64_t nowMs, bool &dataChanged) {
+void YadEngine::stepHa(uint64_t nowMs) {
     if (!haEnabled_ || haProto_.authFailed()) return;
 
     auto scheduleReconnect = [&](const std::string &err) {
@@ -412,7 +433,6 @@ void YadEngine::stepHa(uint64_t nowMs, bool &dataChanged) {
         haStatus_ = err.empty() ? "disconnected" : err;
         haNextReconnectMs_ = nowMs + haReconnectDelayMs_;
         haReconnectDelayMs_ = std::min<uint32_t>(30000, haReconnectDelayMs_ * 2);
-        dataChanged = true;
     };
 
     if (!haStream_) {
@@ -464,9 +484,7 @@ void YadEngine::stepHa(uint64_t nowMs, bool &dataChanged) {
                 static_cast<size_t>(nr),
                 [&](const std::string &textMsg) {
                     std::vector<std::string> outMsgs;
-                    if (haProto_.onTextMessage(textMsg, outMsgs)) {
-                        dataChanged = true;
-                    }
+                    haProto_.onTextMessage(textMsg, outMsgs);
                     if (haProto_.isConnected()) {
                         haStatus_ = "connected";
                         haReconnectDelayMs_ = 2000;
@@ -489,7 +507,6 @@ void YadEngine::stepHa(uint64_t nowMs, bool &dataChanged) {
             if (haProto_.authFailed()) {
                 haStream_->close();
                 haStream_.reset();
-                dataChanged = true;
                 return;
             }
         } else if (nr < 0) {
@@ -506,63 +523,36 @@ void YadEngine::stepHa(uint64_t nowMs, bool &dataChanged) {
     }
 }
 
-void YadEngine::pollNetwork() {
+void YadEngine::step() {
     const uint64_t nowMs = platform_.nowMs();
-    bool unusedChanged = false;
-
-    stepExporters(nowMs, unusedChanged);
-    stepHa(nowMs, unusedChanged);
+    stepHa(nowMs);
+    stepExporters(nowMs);
 }
 
-void YadEngine::sampleAndRender() {
+const Framebuffer &YadEngine::getFrame(bool sampleSensors) {
     const uint64_t nowMs = platform_.nowMs();
-    if (localSys_) {
-        localSys_->sample(snapshot_);
-        lastLocalSampleMs_ = nowMs;
-        hasLocalSample_ = true;
-    }
-    const uint64_t intervalMs = static_cast<uint64_t>(std::max(100, config_.refreshMs));
-    nextRenderMs_ = nowMs + intervalMs;
-    renderNow();
-}
-
-bool YadEngine::tick(bool forceRender) {
-    pollNetwork();
-
-    const uint64_t nowMs = platform_.nowMs();
-    const uint64_t intervalMs = static_cast<uint64_t>(std::max(100, config_.refreshMs));
-    const bool timerDue = !hasRendered_ || (nowMs >= nextRenderMs_);
-    if (!forceRender && !needRender_ && !timerDue) {
-        return false;
-    }
-
-    if (localSys_ && (!hasLocalSample_ || timerDue || (nowMs - lastLocalSampleMs_) >= intervalMs)) {
-        localSys_->sample(snapshot_);
-        lastLocalSampleMs_ = nowMs;
-        hasLocalSample_ = true;
-    }
-
-    if (timerDue) {
-        if (!hasRendered_ || (nowMs - nextRenderMs_) >= intervalMs) {
-            nextRenderMs_ = nowMs + intervalMs;
-        } else {
-            nextRenderMs_ += intervalMs;
+    if (sampleSensors || !hasLocalSample_) {
+        if (localSys_) {
+            localSys_->sample(snapshot_);
+            hasLocalSample_ = true;
+        }
+        const int interval = getIntervalMs();
+        for (auto &exPtr : exporters_) {
+            ExporterJob &ex = *exPtr;
+            if (!ex.usedOnCurrentPage) continue;
+            const int periodFrames = std::max(1, (ex.target.pollMs + interval / 2) / interval);
+            if (ex.framesUntilFetch <= 1) {
+                ex.needed = true;
+                ex.framesUntilFetch = periodFrames;
+            } else {
+                --ex.framesUntilFetch;
+            }
         }
     }
 
-    renderNow();
-    return true;
-}
-
-void YadEngine::renderNow() {
-    const uint64_t nowMs = platform_.nowMs();
     haProto_.mergeIntoSnapshot(snapshot_);
     view_.render(snapshot_, nowMs, platform_.nowWallSec());
-    hasRendered_ = true;
-    if (nextRenderMs_ == 0) {
-        nextRenderMs_ = nowMs + static_cast<uint64_t>(std::max(100, config_.refreshMs));
-    }
-    needRender_ = false;
+    return view_.framebuffer();
 }
 
 }  // namespace yad

@@ -130,6 +130,7 @@ struct RowConfig {
 
 struct PageConfig {
     std::string name = "Main";
+    int refreshMs = 0;  // 0 = inherit DashboardConfig::refreshMs
     std::vector<RowConfig> rows;
 };
 
