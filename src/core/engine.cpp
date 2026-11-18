@@ -7,6 +7,7 @@
 #endif
 
 #include <algorithm>
+#include <numeric>
 
 namespace yad {
 
@@ -53,6 +54,26 @@ int YadEngine::getIntervalMs() const {
         }
     }
     return std::max(100, config_.refreshMs);
+}
+
+uint64_t YadEngine::nextAlignedWallMs(uint64_t nowWallMs, uint64_t stepMs) {
+    if (stepMs == 0) stepMs = 1000;
+    const uint64_t align = std::gcd(stepMs, static_cast<uint64_t>(1000));
+    if (align <= 1) return nowWallMs + stepMs;
+    uint64_t next = ((nowWallMs / align) + 1) * align;
+    if (stepMs > align && (next - nowWallMs) < 100) {
+        next += align;
+    }
+    return next;
+}
+
+uint64_t YadEngine::advanceAlignedWallMs(uint64_t nextRenderWallMs, uint64_t nowWallMs, uint64_t stepMs) {
+    if (stepMs == 0) stepMs = 1000;
+    nextRenderWallMs += stepMs;
+    if (nowWallMs >= nextRenderWallMs + stepMs) {
+        return nextAlignedWallMs(nowWallMs, stepMs);
+    }
+    return nextRenderWallMs;
 }
 
 bool YadEngine::loadConfigFromJson(const std::string &jsonText, std::string *error) {
@@ -529,11 +550,13 @@ void YadEngine::step() {
     stepExporters(nowMs);
 }
 
-const Framebuffer &YadEngine::getFrame(bool sampleSensors) {
+const Framebuffer &YadEngine::getFrame(bool sampleSensors, std::time_t nowWallSec) {
     const uint64_t nowMs = platform_.nowMs();
     if (sampleSensors || !hasLocalSample_) {
         if (localSys_) {
             localSys_->sample(snapshot_);
+            ++localSeq_;
+            snapshot_.set("_seq", static_cast<double>(localSeq_));
             hasLocalSample_ = true;
         }
         const int interval = getIntervalMs();
@@ -551,7 +574,8 @@ const Framebuffer &YadEngine::getFrame(bool sampleSensors) {
     }
 
     haProto_.mergeIntoSnapshot(snapshot_);
-    view_.render(snapshot_, nowMs, platform_.nowWallSec());
+    const std::time_t wallSec = (nowWallSec != 0) ? nowWallSec : platform_.nowWallSec();
+    view_.render(snapshot_, nowMs, wallSec);
     return view_.framebuffer();
 }
 

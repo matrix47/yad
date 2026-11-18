@@ -183,6 +183,22 @@ static void drawIconTextRow(Framebuffer &fb,
     fb.drawText(textRect, *font, text, textColor, AlignLeft | AlignVCenter);
 }
 
+static bool consumeMetricSample(const Snapshot &snapshot,
+                                const ParamMap &p,
+                                const std::string &presenceKey,
+                                bool &hasSeq,
+                                double &lastSeq) {
+    const std::string seqKey = resolveMetricKey(p, "_seq");
+    if (snapshot.contains(seqKey)) {
+        const double seq = snapshot.getDouble(seqKey, -1.0);
+        if (hasSeq && seq == lastSeq) return false;
+        lastSeq = seq;
+        hasSeq = true;
+        return true;
+    }
+    return presenceKey.empty() || snapshot.contains(presenceKey);
+}
+
 }  // namespace
 
 struct DashboardView::CardState {
@@ -207,6 +223,8 @@ struct DashboardView::CardState {
 
     std::vector<double> history;
     double autoPeakBps = 128.0 * 1024.0;
+    double lastSeq = -1.0;
+    bool hasSeq = false;
     int scrollOffset = 0;
     int scrollDir = 1;
     uint64_t lastThrottleMs = 0;
@@ -471,8 +489,10 @@ void DashboardView::render(const Snapshot &snapshot, uint64_t nowMs, std::time_t
                     detail = buf;
                 }
 
-                st.history.push_back(pct);
-                if (st.history.size() > 64) st.history.erase(st.history.begin());
+                if (consumeMetricSample(snapshot, p, source, st.hasSeq, st.lastSeq)) {
+                    st.history.push_back(pct);
+                    if (st.history.size() > 64) st.history.erase(st.history.begin());
+                }
 
                 const int headerH = std::max(14, fontSize + 2);
                 const int barH = showBar ? 7 : 0;
@@ -558,7 +578,7 @@ void DashboardView::render(const Snapshot &snapshot, uint64_t nowMs, std::time_t
                 const bool isUp = snapshot.getBool(prefix + "up", false);
                 const double rxBps = snapshot.getDouble(prefix + "rx_bps", 0.0);
                 const double txBps = snapshot.getDouble(prefix + "tx_bps", 0.0);
-                if (maxBps <= 0.0) {
+                if (maxBps <= 0.0 && consumeMetricSample(snapshot, p, prefix + "rx_bps", st.hasSeq, st.lastSeq)) {
                     const double curMax = std::max(rxBps, txBps);
                     st.autoPeakBps = std::max(128.0 * 1024.0, std::max(curMax, st.autoPeakBps * 0.92));
                 }

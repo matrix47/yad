@@ -255,11 +255,13 @@ int main(int argc, char *argv[]) {
         SDL_SetWindowTitle(window, title);
     };
 
-    engine.getFrame(true);
+    const uint64_t initWall = platform.nowWallMs();
+    engine.getFrame(true, static_cast<std::time_t>(initWall / 1000ULL));
     engine.step();
     updateTitle();
     uint64_t lastTitleMs = platform.nowMs();
-    uint64_t nextRenderMs = lastTitleMs + static_cast<uint64_t>(engine.getIntervalMs());
+    uint64_t nextRenderWallMs = yad::YadEngine::nextAlignedWallMs(
+        initWall, static_cast<uint64_t>(engine.getIntervalMs()));
 
     bool running = true;
     while (running) {
@@ -273,27 +275,33 @@ int main(int argc, char *argv[]) {
                     running = false;
                 } else if (key == SDLK_RIGHT) {
                     engine.nextPage();
-                    engine.getFrame(false);
+                    const uint64_t nowWall = platform.nowWallMs();
+                    engine.getFrame(false, static_cast<std::time_t>(nowWall / 1000ULL));
                     engine.step();
-                    nextRenderMs = platform.nowMs() + static_cast<uint64_t>(engine.getIntervalMs());
+                    nextRenderWallMs = yad::YadEngine::nextAlignedWallMs(
+                        nowWall, static_cast<uint64_t>(engine.getIntervalMs()));
                     updateTitle();
                 } else if (key == SDLK_LEFT) {
                     engine.prevPage();
-                    engine.getFrame(false);
+                    const uint64_t nowWall = platform.nowWallMs();
+                    engine.getFrame(false, static_cast<std::time_t>(nowWall / 1000ULL));
                     engine.step();
-                    nextRenderMs = platform.nowMs() + static_cast<uint64_t>(engine.getIntervalMs());
+                    nextRenderWallMs = yad::YadEngine::nextAlignedWallMs(
+                        nowWall, static_cast<uint64_t>(engine.getIntervalMs()));
                     updateTitle();
                 } else if (key == SDLK_R) {
                     if (loadEngineConfig(engine, configPath, cliExporters, err)) {
-                        engine.getFrame(true);
+                        const uint64_t nowWall = platform.nowWallMs();
+                        engine.getFrame(true, static_cast<std::time_t>(nowWall / 1000ULL));
                         engine.step();
-                        nextRenderMs = platform.nowMs() + static_cast<uint64_t>(engine.getIntervalMs());
+                        nextRenderWallMs = yad::YadEngine::nextAlignedWallMs(
+                            nowWall, static_cast<uint64_t>(engine.getIntervalMs()));
                         updateTitle();
                     }
                 } else if (key == SDLK_F) {
                     format = (format == yad::PixelFormat::RGB32) ? yad::PixelFormat::RGB565 : yad::PixelFormat::RGB32;
                     engine.setPixelFormat(format);
-                    engine.getFrame(false);
+                    engine.getFrame(false, static_cast<std::time_t>(platform.nowWallMs() / 1000ULL));
                     SDL_DestroyTexture(texture);
                     texture = createTex(format);
                     updateTitle();
@@ -315,22 +323,25 @@ int main(int argc, char *argv[]) {
                 off += static_cast<ssize_t>(sizeof(struct inotify_event)) + iev->len;
             }
             if (reload && loadEngineConfig(engine, configPath, cliExporters, err)) {
-                engine.getFrame(true);
+                const uint64_t nowWall = platform.nowWallMs();
+                engine.getFrame(true, static_cast<std::time_t>(nowWall / 1000ULL));
                 engine.step();
-                nextRenderMs = platform.nowMs() + static_cast<uint64_t>(engine.getIntervalMs());
+                nextRenderWallMs = yad::YadEngine::nextAlignedWallMs(
+                    nowWall, static_cast<uint64_t>(engine.getIntervalMs()));
                 updateTitle();
             }
         }
 
         engine.step();
         const uint64_t now = platform.nowMs();
+        const uint64_t nowWall = platform.nowWallMs();
         const uint64_t interval = static_cast<uint64_t>(engine.getIntervalMs());
-        if (now >= nextRenderMs) {
-            engine.getFrame(true);
-            nextRenderMs += interval;
-            if (now >= nextRenderMs + interval) {
-                nextRenderMs = now + interval;
-            }
+        if (nextRenderWallMs > nowWall + interval + 1000ULL) {
+            nextRenderWallMs = yad::YadEngine::nextAlignedWallMs(nowWall, interval);
+        }
+        if (nowWall >= nextRenderWallMs) {
+            engine.getFrame(true, static_cast<std::time_t>(nowWall / 1000ULL));
+            nextRenderWallMs = yad::YadEngine::advanceAlignedWallMs(nextRenderWallMs, nowWall, interval);
         }
         if (now - lastTitleMs >= 500) {
             updateTitle();

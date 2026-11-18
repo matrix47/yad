@@ -22,6 +22,12 @@ std::time_t PosixPlatform::nowWallSec() const {
     return std::time(nullptr);
 }
 
+uint64_t PosixPlatform::nowWallMs() const {
+    using namespace std::chrono;
+    const auto ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    return (ms > 0) ? static_cast<uint64_t>(ms) : 0ULL;
+}
+
 void PosixPlatform::fillRandom(uint8_t *buf, size_t len) {
     if (!buf || len == 0) return;
     int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);

@@ -35,6 +35,10 @@ public:
     // Configured page refresh interval in milliseconds (default 1000, min 100).
     int getIntervalMs() const;
 
+    // Wall-clock alignment helpers (aligns to gcd(stepMs, 1000) boundaries).
+    static uint64_t nextAlignedWallMs(uint64_t nowWallMs, uint64_t stepMs);
+    static uint64_t advanceAlignedWallMs(uint64_t nextRenderWallMs, uint64_t nowWallMs, uint64_t stepMs);
+
     // Non-blocking step: polls Home Assistant WebSocket updates and advances any
     // active/needed node_exporter HTTP fetches into snapshot_.
     void step();
@@ -43,7 +47,7 @@ public:
     // - sampleSensors = true (periodic interval pull): samples local sensors and
     //   marks active node_exporters as needed when their poll_ms period is due.
     // - sampleSensors = false (e.g. page navigation): renders current snapshot immediately.
-    const Framebuffer &getFrame(bool sampleSensors = true);
+    const Framebuffer &getFrame(bool sampleSensors = true, std::time_t nowWallSec = 0);
 
     const Framebuffer &framebuffer() const { return view_.framebuffer(); }
     const uint32_t *pixels32() const { return view_.pixels32(); }
@@ -103,6 +107,7 @@ private:
     uint64_t haNextPingMs_ = 0;
     uint32_t haReconnectDelayMs_ = 2000;
 
+    uint64_t localSeq_ = 0;
     bool hasLocalSample_ = false;
 };
 

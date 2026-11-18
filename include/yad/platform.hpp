@@ -42,6 +42,9 @@ public:
 
     virtual uint64_t nowMs() const = 0;
     virtual std::time_t nowWallSec() const = 0;
+    virtual uint64_t nowWallMs() const {
+        return static_cast<uint64_t>(nowWallSec()) * 1000ULL;
+    }
     virtual void fillRandom(uint8_t *buf, size_t len) = 0;
     virtual std::string resolveEnv(const std::string &name) const = 0;
     virtual std::string readFileText(const std::string &path) const = 0;

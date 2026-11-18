@@ -82,6 +82,7 @@ private:
     double prevCpuTotal_ = 0.0;
     double prevCpuIdle_ = 0.0;
     bool hasPrevCpu_ = false;
+    uint64_t pollSeq_ = 0;
 
     struct PrevNet {
         double rxBytes = 0.0;

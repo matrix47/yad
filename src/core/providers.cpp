@@ -191,6 +191,7 @@ void NodeExporterParser::processLine(const std::string &line) {
 }
 
 void NodeExporterParser::writeMetrics(const std::string &pfx, double cpuPct, double dtSec, Snapshot &out) const {
+    out.set(pfx + "_seq", static_cast<double>(pollSeq_));
     if (sawCpu_) {
         out.set(pfx + "cpu.total", cpuPct);
         char buf[48];
@@ -384,6 +385,7 @@ void NodeExporterParser::endPoll(double nowSec, Snapshot &out, bool alsoWriteUnp
         }
     }
 
+    ++pollSeq_;
     writeMetrics(prefix_, cpuPct, dtSec, out);
     if (alsoWriteUnprefixed && !prefix_.empty()) {
         writeMetrics("", cpuPct, dtSec, out);
